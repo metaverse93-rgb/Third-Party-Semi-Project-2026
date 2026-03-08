@@ -54,6 +54,7 @@ class YouTubeShortsAnalysisPipeline:
                     "duration": preprocessing_result.video_metadata.duration,
                     "view_count": preprocessing_result.video_metadata.view_count
                 },
+                "model_used": self.analyzer.mode,
                 "analysis_result": {
                     "category": analysis_result.c_category.value,
                     "category_name": analysis_result.c_category.name,
@@ -77,9 +78,10 @@ class YouTubeShortsAnalysisPipeline:
             result["recommended_actions"] = self._get_recommended_actions(analysis_result)
 
             # ✅ DB 저장
-            self._save_to_db(
+            db_saved = self._save_to_db(
                 video_url, preprocessing_result, analysis_result, total_processing_time
             )
+            result["db_saved"] = db_saved if db_saved is not None else False
 
             return result
 
@@ -143,9 +145,12 @@ class YouTubeShortsAnalysisPipeline:
                 session.commit()
 
             logger.info(f"💾 DB 저장 완료: {meta.video_id} → {analysis_result.c_category.value}")
+            return True
 
         except Exception as e:
             logger.error(f"⚠️ DB 저장 실패 (분석 결과는 정상): {e}")
+            # 분석 결과 dict에 플래그 추가 (user_api.py에서 경고 응답 가능)
+            return False
 
     def _get_recommended_actions(self, result: AnalysisResult) -> list[str]:
         """분석 결과에 따른 추천 액션"""

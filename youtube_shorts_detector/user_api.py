@@ -62,6 +62,7 @@ class VideoAnalysisResponse(BaseModel):
     confidence_level: str  # high, medium, low
     recommended_actions: List[str]
     report_url: str
+    model_used: Optional[str] = None
     
 class UserFeedbackRequest(BaseModel):
     """사용자 피드백 요청"""
@@ -149,7 +150,8 @@ async def analyze_video(
             processing_time=processing_time,
             confidence_level=confidence_level,
             recommended_actions=recommended_actions,
-            report_url=report_url
+            report_url=report_url,
+            model_used=analysis_result.get("model_used", "gpt-4o-mini")
         )
         
         # 백그라운드에서 성능 로깅

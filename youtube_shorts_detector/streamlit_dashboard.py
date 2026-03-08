@@ -392,6 +392,64 @@ def _extract_video_id(url: str) -> str:
     return f"video_{abs(hash(url)) % 100000}"
 
 
+def _fetch_youtube_title(url: str) -> str:
+    """YouTube URL에서 영상 제목을 가져옴 (oEmbed API 사용, 실패 시 '—' 반환)"""
+    info = _fetch_youtube_info(url)
+    return info.get("title", "—")
+
+
+def _fetch_youtube_info(url: str) -> dict:
+    """YouTube URL에서 제목·조회수·길이를 가져옴. 실패 시 빈 dict 반환."""
+    if not url or url == "—":
+        return {}
+    try:
+        import re, urllib.parse, urllib.request, json as _json
+
+        vid_id = _extract_video_id(url)
+
+        # 1) oEmbed로 제목 취득
+        title = "—"
+        try:
+            oembed_url = ("https://www.youtube.com/oembed?url="
+                          + urllib.parse.quote(url) + "&format=json")
+            req = urllib.request.Request(oembed_url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                title = _json.loads(resp.read().decode()).get("title", "—")
+        except Exception:
+            pass
+
+        # 2) YouTube 페이지 HTML에서 조회수·길이 파싱
+        view_count = None
+        duration_sec = None
+        try:
+            page_url = f"https://www.youtube.com/watch?v={vid_id}"
+            req2 = urllib.request.Request(
+                page_url,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                        "Chrome/120.0.0.0 Safari/537.36",
+                         "Accept-Language": "ko-KR,ko;q=0.9"}
+            )
+            with urllib.request.urlopen(req2, timeout=8) as resp:
+                html = resp.read().decode("utf-8", errors="ignore")
+
+            # 조회수: "viewCount":"1234567"
+            m_view = re.search(r'"viewCount"\s*:\s*"(\d+)"', html)
+            if m_view:
+                view_count = int(m_view.group(1))
+
+            # 길이(초): "lengthSeconds":"123"
+            m_dur = re.search(r'"lengthSeconds"\s*:\s*"(\d+)"', html)
+            if m_dur:
+                duration_sec = int(m_dur.group(1))
+        except Exception:
+            pass
+
+        return {"title": title, "view_count": view_count, "duration_sec": duration_sec}
+    except Exception:
+        return {}
+
+
 def make_mock_analysis(video_id: str) -> dict:
     """Mock 분석 데이터 (API/DB 없을 때 사용)"""
     cats = ["C1", "C2", "C3", "C4", "C5"]
@@ -415,7 +473,7 @@ def make_mock_analysis(video_id: str) -> dict:
         "confidence_score": conf,
         "reasoning_log": reasoning_map[cat],
         "status": status_map[cat],
-        "model_used": "GPT4o (Mock)",
+        "model_used": "gpt-4o-mini (서버 오프라인)",
         "processing_time": round(random.uniform(1.2, 4.8), 2),
         "context_score": ctx,
         "s_semantic": s,
@@ -443,7 +501,7 @@ def get_analysis_data(video_id: str) -> dict:
             "confidence_score": r["analysis_result"]["confidence_score"],
             "reasoning_log": r["analysis_result"]["reasoning_log"],
             "status": r["analysis_result"]["status"],
-            "model_used": "GPT4o (Mock)",
+            "model_used": r.get("model_used", "gpt-4o-mini"),
             "processing_time": r.get("processing_time", 1.5),
             "context_score": r["context_score"].get("context_score", 0.75),
             "s_semantic": r["context_score"].get("s_semantic", 0.8),
@@ -459,10 +517,9 @@ def get_analysis_data(video_id: str) -> dict:
 
     # 2. DB 연동 시도
     try:
-        from database_manager import DatabaseManager
+        from database_manager import db_manager
         from database_models import AnalysisResults, Contents
-        _dm = DatabaseManager(mock_mode=True)
-        session = _dm.get_session()
+        session = db_manager.get_session()
         try:
             analysis = session.query(AnalysisResults).join(Contents).filter(
                 AnalysisResults.video_id == video_id
@@ -645,8 +702,8 @@ def render_radar_chart(data: dict):
         ),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=40, r=40, t=30, b=30),
-        height=320,
+        margin=dict(l=0, r=0, t=20, b=20),
+        height=440,
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
@@ -660,6 +717,8 @@ def render_confidence_gauge(confidence: float, category: str):
         mode="gauge+number",
         value=confidence * 100,
         number={"suffix": "%", "font": {"size": 32, "color": color, "family": "Syne"}},
+        title={"text": "AI 확신도", "font": {"size": 13, "color": "#aaaaaa", "family": "Syne"}},
+        domain={"x": [0.05, 0.95], "y": [0.05, 0.95]},
         gauge={
             "axis": {"range": [0, 100], "tickwidth": 1, "tickcolor": "#999999",
                      "tickfont": {"size": 10, "color": "#999999"}},
@@ -675,10 +734,10 @@ def render_confidence_gauge(confidence: float, category: str):
         },
     ))
     fig.update_layout(
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=20, r=20, t=20, b=20),
-        height=220,
+        paper_bgcolor="#ffffff",
+        plot_bgcolor="#ffffff",
+        margin=dict(l=20, r=20, t=80, b=40),
+        height=440,
         font={"color": "#555555"},
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
@@ -719,6 +778,8 @@ def render_category_bar():
 # ─────────────────────────────────────────
 
 def show_report(video_id: str):
+    # 리포트 화면에서는 메인 상단 여백 상쇄
+    st.markdown("<div style='margin-top:-18vh'></div>", unsafe_allow_html=True)
     data = get_analysis_data(video_id)
     cat = data["category"]
     meta = CATEGORY_META.get(cat, CATEGORY_META["C5"])
@@ -732,60 +793,153 @@ def show_report(video_id: str):
 
     st.markdown("<div class='section-header'>분석 리포트</div>", unsafe_allow_html=True)
 
-    # ── Verdict Card + Gauge ──────────────────
-    col_card, col_gauge = st.columns([3, 2])
+    # ── Verdict Card + 상세 정보 ──────────────────
+    st.markdown("""
+    <style>
+      /* 행 전체 stretch */
+      div[data-testid="stHorizontalBlock"]:has(.verdict-card) {
+        align-items: stretch !important;
+      }
+      /* Streamlit 컬럼 내부 래퍼 전체 체인 height:100% */
+      div[data-testid="stHorizontalBlock"]:has(.verdict-card)
+        > div[data-testid="stVerticalBlockBorderWrapper"],
+      div[data-testid="stHorizontalBlock"]:has(.verdict-card)
+        > div[data-testid="stVerticalBlockBorderWrapper"] > div,
+      div[data-testid="stHorizontalBlock"]:has(.verdict-card)
+        > div[data-testid="stVerticalBlockBorderWrapper"] > div
+        > div[data-testid="stVerticalBlock"],
+      div[data-testid="stHorizontalBlock"]:has(.verdict-card)
+        > div[data-testid="stVerticalBlockBorderWrapper"] > div
+        > div[data-testid="stVerticalBlock"] > div:first-child {
+        height: 100% !important;
+        display: flex !important;
+        flex-direction: column !important;
+      }
+      /* 카드 자체 */
+      .verdict-card {
+        flex: 1 !important;
+        height: 100% !important;
+        box-sizing: border-box !important;
+      }
+      /* 정보 패널 */
+      .info-panel {
+        flex: 1 !important;
+        background: #f8f9fa;
+        border: 1px solid #e9ecef;
+        border-radius: 16px;
+        padding: 16px 20px;
+        height: 100%;
+        box-sizing: border-box;
+      }
+    </style>
+    """, unsafe_allow_html=True)
+    col_card, col_info = st.columns([3, 2])
 
     with col_card:
-        st.markdown(f"""
-        <div class="verdict-card verdict-{verdict}">
-          <div style="display:flex;align-items:flex-start;gap:18px;">
-            <div style="font-size:3.5rem;line-height:1">{meta['icon']}</div>
-            <div>
-              <p class="verdict-category" style="color:{'#fca5a5' if verdict=='danger' else '#fcd34d' if verdict=='warning' else '#6ee7b7'}">{cat}</p>
-              <p class="verdict-label">{meta['label']}</p>
-              <span class="verdict-badge badge-{verdict}">{meta['badge']}</span>
+        # ── 유튜브 영상 embed 준비 ──
+        _url_for_embed = st.session_state.get("analyzed_url", "")
+        _vid_id_embed  = _extract_video_id(_url_for_embed) if _url_for_embed and _url_for_embed != "—" else ""
+        _has_video     = bool(_vid_id_embed and not _vid_id_embed.startswith("video_"))
+        _thumb_url     = f"https://img.youtube.com/vi/{_vid_id_embed}/hqdefault.jpg" if _vid_id_embed else ""
+
+        if _has_video:
+            # 카테고리 정보(왼쪽) + 세로 영상(오른쪽) 나란히
+            st.markdown(f"""
+            <div class="verdict-card verdict-{verdict}"
+                 style="display:flex;align-items:stretch;gap:20px;padding:20px;">
+
+              <!-- 왼쪽: 카테고리 정보 -->
+              <div style="flex:1;display:flex;flex-direction:column;justify-content:center;gap:12px;">
+                <div style="font-size:3rem;line-height:1">{meta['icon']}</div>
+                <div>
+                  <p class="verdict-category"
+                     style="color:{'#fca5a5' if verdict=='danger' else '#fcd34d' if verdict=='warning' else '#6ee7b7'};
+                            margin:0 0 4px 0">{cat}</p>
+                  <p class="verdict-label" style="margin:0 0 8px 0">{meta['label']}</p>
+                  <span class="verdict-badge badge-{verdict}">{meta['badge']}</span>
+                </div>
+              </div>
+
+              <!-- 오른쪽: 세로형 숏츠 (9:16) -->
+              <div style="width:160px;flex-shrink:0;">
+                <div style="position:relative;width:160px;height:284px;
+                            border-radius:12px;overflow:hidden;background:#000;">
+                  <iframe
+                    src="https://www.youtube.com/embed/{_vid_id_embed}?rel=0&modestbranding=1"
+                    style="position:absolute;top:0;left:0;width:100%;height:100%;border:none;"
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                    allowfullscreen>
+                  </iframe>
+                </div>
+              </div>
+
             </div>
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
+            """, unsafe_allow_html=True)
+        else:
+            # 영상 없을 때 기존 레이아웃 + 썸네일
+            st.markdown(f"""
+            <div class="verdict-card verdict-{verdict}">
+              <div style="display:flex;align-items:flex-start;gap:18px;">
+                <div style="font-size:3.5rem;line-height:1">{meta['icon']}</div>
+                <div>
+                  <p class="verdict-category" style="color:{'#fca5a5' if verdict=='danger' else '#fcd34d' if verdict=='warning' else '#6ee7b7'}">{cat}</p>
+                  <p class="verdict-label">{meta['label']}</p>
+                  <span class="verdict-badge badge-{verdict}">{meta['badge']}</span>
+                </div>
+              </div>
+              {f'<img src="{_thumb_url}" style="width:100%;border-radius:10px;margin-top:12px;" onerror="this.style.display=\'none\'">' if _thumb_url else ''}
+            </div>
+            """, unsafe_allow_html=True)
 
-        # 영상 정보
-        st.markdown(f"""
-        <div style="display:flex;gap:24px;margin-top:14px;flex-wrap:wrap;">
-          <div><span style="color:#3d4263;font-size:0.75rem;text-transform:uppercase;letter-spacing:0.08em">채널</span>
-               <p style="margin:2px 0 0 0;color:#8b90b5;font-size:0.9rem">{data.get('channel_name','—')}</p></div>
-          <div><span style="color:#3d4263;font-size:0.75rem;text-transform:uppercase;letter-spacing:0.08em">조회수</span>
-               <p style="margin:2px 0 0 0;color:#8b90b5;font-size:0.9rem">{data.get('view_count',0):,}회</p></div>
-          <div><span style="color:#3d4263;font-size:0.75rem;text-transform:uppercase;letter-spacing:0.08em">길이</span>
-               <p style="margin:2px 0 0 0;color:#8b90b5;font-size:0.9rem">{data.get('duration',0)}초</p></div>
-          <div><span style="color:#3d4263;font-size:0.75rem;text-transform:uppercase;letter-spacing:0.08em">모델</span>
-               <p style="margin:2px 0 0 0;color:#8b90b5;font-size:0.9rem">{data.get('model_used','—')}</p></div>
-          <div><span style="color:#3d4263;font-size:0.75rem;text-transform:uppercase;letter-spacing:0.08em">처리 시간</span>
-               <p style="margin:2px 0 0 0;color:#8b90b5;font-size:0.9rem">{data.get('processing_time',0):.2f}s</p></div>
-        </div>
-        """, unsafe_allow_html=True)
+    with col_info:
+        _url_val   = st.session_state.get("analyzed_url", "—")
+        _title_val = st.session_state.get("analyzed_title", "—")
 
-    with col_gauge:
-        st.markdown("<div class='section-header' style='margin-top:0'>AI 확신도 (Confidence)</div>", unsafe_allow_html=True)
-        render_confidence_gauge(data["confidence_score"], cat)
-        status_color = {"AUTO_APPROVE": "#10b981", "HUMAN_REVIEW": "#f59e0b",
-                        "AUTO_REJECT": "#ef4444", "ANALYSIS_FAILED": "#6b7280"}
-        s = data.get("status", "HUMAN_REVIEW")
-        st.markdown(f"""
-        <div style="text-align:center;margin-top:-8px">
-          <span style="font-size:0.78rem;color:{status_color.get(s,'#8b90b5')};
-                       background:rgba(0,0,0,0.3);padding:4px 14px;border-radius:20px;
-                       border:1px solid {status_color.get(s,'#8b90b5')}40">{s}</span>
-        </div>
-        """, unsafe_allow_html=True)
+        # 조회수: 세션 우선, 없으면 data 폴백
+        _views_raw = st.session_state.get("analyzed_views")
+        if _views_raw is not None:
+            _views_str = f"{_views_raw:,}회"
+        else:
+            _v = data.get('view_count', 0)
+            _views_str = f"{_v:,}회" if _v else "—"
+
+        # 길이: 세션 우선, 없으면 data 폴백 → mm:ss 변환
+        _dur_raw = st.session_state.get("analyzed_duration")
+        if _dur_raw is not None:
+            _dur_str = f"{_dur_raw // 60}:{_dur_raw % 60:02d}" if _dur_raw >= 60 else f"{_dur_raw}초"
+        else:
+            _d = data.get('duration', 0)
+            _dur_str = f"{_d}초" if _d else "—"
+
+        _info_items = [
+            ("URL",    _url_val),
+            ("제목",   _title_val),
+            ("조회수", _views_str),
+            ("길이",   _dur_str),
+            ("모델",   data.get('model_used', '—')),
+            ("처리 시간", f"{data.get('processing_time', 0):.2f}s"),
+        ]
+        info_html = "<div class='info-panel'>"
+        for _label, _value in _info_items:
+            _font = "color:#888;font-size:0.75rem" if _label in ("URL", "제목") else "color:#444;font-size:0.88rem;font-weight:500"
+            info_html += (
+                f"<div style='display:flex;align-items:baseline;gap:10px;padding:7px 0;"
+                f"border-bottom:1px solid #f4f4f4;'>"
+                f"<span style='color:#3d4263;font-size:0.72rem;text-transform:uppercase;"
+                f"letter-spacing:0.08em;min-width:68px;flex-shrink:0'>{_label}</span>"
+                f"<span style='{_font};word-break:break-all'>{_value}</span></div>"
+            )
+        info_html += "</div>"
+        st.markdown(info_html, unsafe_allow_html=True)
 
     # ── AI 판단 근거 ──────────────────────────
     st.markdown("<div class='section-header'>AI 판단 근거 (Reasoning View)</div>", unsafe_allow_html=True)
     st.markdown(f"<div class='reasoning-box'>💬 {data.get('reasoning_log','—')}</div>", unsafe_allow_html=True)
 
-    # ── Context Score ──────────────────────────
+    # ── Context Score + AI 확신도 + 레이더 차트 ──────────────────────────
     st.markdown("<div class='section-header'>Context Score 상세 분석</div>", unsafe_allow_html=True)
 
+    # 1행: 4개 점수 카드 (전체 너비)
     col_m1, col_m2, col_m3, col_m4 = st.columns(4)
     scores_info = [
         (col_m1, "S_semantic",   data.get("s_semantic", 0),    "의미적 유사도", "50%"),
@@ -809,13 +963,37 @@ def show_report(video_id: str):
             </div>
             """, unsafe_allow_html=True)
 
-    # ── 레이더 차트 ───────────────────────────
-    col_radar, col_empty = st.columns([2, 1])
+    # 2행: 왼쪽 레이더 차트 / 오른쪽 게이지 차트 (동일 크기)
+    st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
+    _, col_radar, _, col_gauge, _ = st.columns([0.3, 1, 0.3, 1, 0.15])
+
     with col_radar:
+        st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
         render_radar_chart(data)
+        st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+
+    with col_gauge:
+        render_confidence_gauge(data["confidence_score"], cat)
 
     # ── 사용자 액션 ───────────────────────────
-    st.markdown("<div class='section-header'>사용자 액션</div>", unsafe_allow_html=True)
+    st.markdown("""
+    <div style="
+        background:#f8f9fa;
+        border:1px solid #e9ecef;
+        border-radius:14px;
+        padding:18px 24px;
+        text-align:center;
+        margin:28px 0 14px 0;
+    ">
+      <span style="
+        font-family:'DM Sans',sans-serif;
+        font-size:0.95rem;
+        font-weight:500;
+        color:#555555;
+        letter-spacing:0.01em;
+      ">이 영상에 대해 어떻게 생각하시나요?</span>
+    </div>
+    """, unsafe_allow_html=True)
 
     # 세션 초기화
     if "show_opinion_form" not in st.session_state:
@@ -825,26 +1003,51 @@ def show_report(video_id: str):
     if "action_result" not in st.session_state:
         st.session_state.action_result = None
 
-    # 버튼 3개 + 의견보내기
-    btn_cols = st.columns(4)
+    # 유튜브 링크 생성 헬퍼
+    yt_url       = f"https://www.youtube.com/watch?v={video_id}"
+    yt_report_url = f"https://www.youtube.com/watch?v={video_id}&action=flag"
+    channel_name  = data.get("channel_name", "")
+
+    # 채널 페이지: channel_name이 있으면 검색, 없으면 영상 페이지
+    yt_channel_url = (
+        f"https://www.youtube.com/results?search_query={requests.utils.quote(channel_name)}"
+        if channel_name and channel_name not in ("—", "Mock Channel")
+        else yt_url
+    )
+
+    # 버튼 5개 (좋아요, 싫어요, 채널추천안함, 신고하기, 의견보내기)
+    btn_cols = st.columns(5)
     with btn_cols[0]:
         if st.button("👍 좋아요", use_container_width=True, key="act_like"):
             submit_feedback(video_id, "like")
-            st.session_state.action_result = ("success", "좋아요가 기록되었습니다!")
+            st.session_state.action_result = (
+                "success",
+                f"좋아요가 기록되었습니다! 유튜브에서도 좋아요를 누르려면 → [영상 바로가기]({yt_url})"
+            )
             st.session_state.show_opinion_form = False
     with btn_cols[1]:
-        if st.button("🚫 채널 추천 안 함", use_container_width=True, key="act_block"):
-            submit_feedback(video_id, "block_channel")
-            st.session_state.action_result = ("success", "채널 추천 안 함이 기록되었습니다!")
+        if st.button("👎 싫어요", use_container_width=True, key="act_dislike"):
+            submit_feedback(video_id, "dislike")
+            st.session_state.action_result = (
+                "success",
+                f"싫어요가 기록되었습니다! 유튜브에서도 싫어요를 누르려면 → [영상 바로가기]({yt_url})"
+            )
             st.session_state.show_opinion_form = False
     with btn_cols[2]:
+        if st.button("🚫 채널 추천 안 함", use_container_width=True, key="act_block"):
+            submit_feedback(video_id, "block_channel")
+            st.session_state.action_result = (
+                "success",
+                f"채널 추천 안 함이 기록되었습니다! 유튜브에서 채널을 차단하려면 → [채널 바로가기]({yt_channel_url})"
+            )
+            st.session_state.show_opinion_form = False
+    with btn_cols[3]:
         report_label = "📢 신고하기 ▲" if st.session_state.show_report_form else "📢 신고하기 ▼"
         if st.button(report_label, use_container_width=True, key="act_report"):
             st.session_state.show_report_form = not st.session_state.show_report_form
             st.session_state.show_opinion_form = False
             st.session_state.action_result = None
-    with btn_cols[3]:
-        # 의견보내기: 토글 방식
+    with btn_cols[4]:
         btn_label = "✏️ 의견 보내기 ▲" if st.session_state.show_opinion_form else "✏️ 의견 보내기 ▼"
         if st.button(btn_label, use_container_width=True, key="act_opinion"):
             st.session_state.show_opinion_form = not st.session_state.show_opinion_form
@@ -966,7 +1169,11 @@ def show_report(video_id: str):
                          use_container_width=True, disabled=not can_submit):
                 selected = st.session_state.selected_report
                 submit_feedback(video_id, "report", f"[신고 유형: {selected}]")
-                st.session_state.action_result = ("success", f"✅ '{selected}' 유형으로 신고가 접수되었습니다!")
+                st.session_state.action_result = (
+                    "success",
+                    f"✅ '{selected}' 유형으로 신고가 접수되었습니다! "
+                    f"유튜브에도 직접 신고하려면 → [유튜브 신고 페이지]({yt_report_url})"
+                )
                 st.session_state.show_report_form = False
                 st.session_state.selected_report = None
                 st.rerun()
@@ -1089,18 +1296,94 @@ def show_report(video_id: str):
 # ─────────────────────────────────────────
 
 def show_main():
-    # ── URL 분석 입력 ──────────────────────────
-    st.markdown("<div class='section-header'>영상 분석</div>", unsafe_allow_html=True)
+    # ── 검색바 pill CSS (전역 stForm > div에 직접 타겟) ──
+    st.markdown("""
+    <style>
+      /* form 자체 초기화 */
+      div[data-testid="stForm"] {
+        border: none !important;
+        padding: 0 !important;
+        background: transparent !important;
+        box-shadow: none !important;
+      }
+      /* stForm 바로 아래 첫번째 div = 실질적인 컨테이너 */
+      div[data-testid="stForm"] > div:first-child {
+        display: flex !important;
+        flex-direction: row !important;
+        align-items: center !important;
+        border: 1.8px solid #bbbbbb !important;
+        border-radius: 999px !important;
+        background: #ffffff !important;
+        box-shadow: 0 2px 12px rgba(0,0,0,0.09) !important;
+        overflow: hidden !important;
+        padding: 0 !important;
+        gap: 0 !important;
+        transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s !important;
+      }
+      div[data-testid="stForm"] > div:first-child:hover {
+        border-color: #888 !important;
+        box-shadow: 0 6px 24px rgba(0,0,0,0.14) !important;
+        transform: translateY(-2px) !important;
+      }
+      div[data-testid="stForm"] > div:first-child:focus-within {
+        border-color: #cc0000 !important;
+        box-shadow: 0 6px 28px rgba(204,0,0,0.16) !important;
+        transform: translateY(-2px) !important;
+      }
+      /* 입력창 */
+      div[data-testid="stForm"] .stTextInput > div > div > input {
+        border: none !important;
+        box-shadow: none !important;
+        background: transparent !important;
+        height: 52px !important;
+        padding-left: 24px !important;
+        font-size: 0.96rem !important;
+        color: #333 !important;
+        border-radius: 0 !important;
+      }
+      div[data-testid="stForm"] .stTextInput > div > div,
+      div[data-testid="stForm"] .stTextInput > div {
+        border: none !important;
+        background: transparent !important;
+        box-shadow: none !important;
+      }
+      /* CHECK 버튼 */
+      div[data-testid="stForm"] [data-testid="stFormSubmitButton"] > button {
+        height: 52px !important;
+        border-radius: 0 999px 999px 0 !important;
+        border: none !important;
+        border-left: 1.5px solid #e0e0e0 !important;
+        padding: 0 28px !important;
+        font-size: 0.88rem !important;
+        font-weight: 700 !important;
+        letter-spacing: 0.04em !important;
+        background: #ffffff !important;
+        color: #cc0000 !important;
+        white-space: nowrap !important;
+        transition: background 0.18s, color 0.18s !important;
+        box-shadow: none !important;
+      }
+      div[data-testid="stForm"] [data-testid="stFormSubmitButton"] > button:hover {
+        background: #cc0000 !important;
+        color: #ffffff !important;
+        border-left-color: #cc0000 !important;
+        transform: none !important;
+      }
+    </style>
+    """, unsafe_allow_html=True)
 
-    with st.form("analyze_form"):
-        url_col, btn_col = st.columns([5, 1])
-        with url_col:
-            video_url = st.text_input(
-                "url", label_visibility="collapsed",
-                placeholder="YouTube Shorts URL을 붙여넣으세요  (예: https://youtube.com/shorts/...)"
-            )
-        with btn_col:
-            submitted = st.form_submit_button("CHECK", use_container_width=True)
+    # ── 검색바 중앙 정렬 ──────────────────────────
+    _, center_col, _ = st.columns([1, 3, 1])
+    with center_col:
+        with st.form("analyze_form"):
+            url_col, btn_col = st.columns([5, 1])
+            with url_col:
+                video_url = st.text_input(
+                    "url", label_visibility="collapsed",
+                    placeholder="YouTube Shorts URL을 붙여넣으세요  (예: https://youtube.com/shorts/...)"
+                )
+            with btn_col:
+                submitted = st.form_submit_button("CHECK", use_container_width=True)
 
     if submitted and video_url.strip():
         with st.spinner("🤖 AI 분석 중... (최대 60초)"):
@@ -1114,12 +1397,18 @@ def show_main():
                     result = r.json()
                     st.session_state.latest_result = result
                     st.session_state.video_id = result["video_id"]
+                    st.session_state.analyzed_url = video_url.strip()
+                    _yt = _fetch_youtube_info(video_url.strip())
+                    st.session_state.analyzed_title    = _yt.get("title", "—")
+                    st.session_state.analyzed_views    = _yt.get("view_count")
+                    st.session_state.analyzed_duration = _yt.get("duration_sec")
                     st.session_state.show_report = True
                     st.rerun()
                 else:
                     st.error(f"분석 실패: {r.json().get('detail','알 수 없는 오류')}")
             except requests.exceptions.ConnectionError:
                 # 서버 없으면 Mock으로 자동 전환
+                st.warning("⚠️ API 서버에 연결할 수 없습니다. Mock 데이터로 표시됩니다. (실제 분석 및 DB 저장 없음)", icon="⚠️")
                 vid = _extract_video_id(video_url.strip())
                 st.session_state.latest_result = {
                     "video_id": vid,
@@ -1148,13 +1437,26 @@ def show_main():
                     "processing_time": mock["processing_time"],
                 }
                 st.session_state.video_id = vid
+                st.session_state.analyzed_url = video_url.strip()
+                _yt = _fetch_youtube_info(video_url.strip())
+                st.session_state.analyzed_title    = _yt.get("title", "—")
+                st.session_state.analyzed_views    = _yt.get("view_count")
+                st.session_state.analyzed_duration = _yt.get("duration_sec")
                 st.session_state.show_report = True
                 st.rerun()
             except Exception as e:
                 st.error(f"오류: {str(e)}")
 
     elif submitted:
-        st.warning("URL을 입력해주세요.")
+        _, c, _ = st.columns([1, 3, 1])
+        with c:
+            st.markdown("""
+            <div style='text-align:center; color:#856404; background:#fff3cd;
+                        border:1px solid #ffc107; border-radius:10px;
+                        padding:12px 20px; font-size:0.92rem;'>
+              URL을 입력해주세요.
+            </div>
+            """, unsafe_allow_html=True)
 
     # 바로가기: 최근 결과가 있으면 리포트 버튼 표시
     if st.session_state.get("latest_result"):
@@ -1181,27 +1483,7 @@ def show_main():
             st.session_state.show_report = True
             st.rerun()
 
-    # ── 요약 통계 카드 ──────────────────────────
-    st.markdown("<div class='section-header' style='margin-top:32px'>시스템 현황</div>", unsafe_allow_html=True)
-
-    total_c, total_a, total_f, pending = safe_db_counts()
-
-    s1, s2, s3, s4 = st.columns(4)
-    for col, val, lbl, icon in [
-        (s1, total_c, "분석된 콘텐츠", "📹"),
-        (s2, total_a, "분석 결과",     "🎯"),
-        (s3, total_f, "사용자 피드백", "💬"),
-        (s4, pending, "검토 대기 (HITL)", "👤"),
-    ]:
-        with col:
-            st.markdown(f"""
-            <div class="metric-card">
-              <div style="font-size:1.5rem;margin-bottom:6px">{icon}</div>
-              <div class="metric-value">{val:,}</div>
-              <div class="metric-label">{lbl}</div>
-            </div>
-            """, unsafe_allow_html=True)
-
+    # 시스템 현황은 사이드바로 이동
 
 
 
@@ -1209,13 +1491,115 @@ def show_main():
 # DB 안전 조회 헬퍼
 # ─────────────────────────────────────────
 
+def _generate_excel_export() -> bytes | None:
+    """DB에서 분석 결과를 읽어 엑셀 파일(bytes)로 반환"""
+    try:
+        import io, json
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from database_manager import db_manager
+        from database_models import AnalysisResults, Contents
+
+        session = db_manager.get_session()
+        try:
+            rows = (
+                session.query(AnalysisResults)
+                .join(Contents, AnalysisResults.video_id == Contents.video_id)
+                .order_by(AnalysisResults.created_at.desc())
+                .all()
+            )
+            if not rows:
+                return None
+        finally:
+            session.close()
+
+        # raw_response JSON 파싱 헬퍼
+        def _parse_raw(raw):
+            try:
+                d = json.loads(raw or "")
+                return d.get("subtitle_content", ""), d.get("frame_analysis", "")
+            except Exception:
+                return "", ""
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "분석결과"
+
+        headers = ["Video ID", "분류", "신뢰도", "상태", "판단 근거",
+                   "자막 내용", "프레임 분석", "모델", "처리시간(초)", "분석 시각"]
+        ws.append(headers)
+
+        # 헤더 스타일
+        header_fill = PatternFill("solid", start_color="CC0000", end_color="CC0000")
+        thin = Side(style="thin", color="DDDDDD")
+        border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = Font(bold=True, color="FFFFFF", name="Arial", size=10)
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.border = border
+        ws.row_dimensions[1].height = 30
+
+        cat_colors  = {"C1": "FECDD3", "C2": "FED7AA", "C3": "FEF08A",
+                       "C4": "E9D5FF", "C5": "BBF7D0"}
+        stat_colors = {"AUTO_APPROVE": "BBF7D0", "HUMAN_REVIEW": "FEF08A",
+                       "AUTO_REJECT": "FECDD3", "ANALYSIS_FAILED": "E5E7EB"}
+
+        for r in rows:
+            subtitle, frame = _parse_raw(r.raw_response)
+            conf = f"{r.confidence_score:.0%}" if r.confidence_score is not None else "-"
+            proc = f"{r.processing_time:.1f}s" if r.processing_time is not None else "-"
+            created = r.created_at.strftime("%Y-%m-%d %H:%M:%S") if r.created_at else "-"
+
+            ws.append([
+                r.video_id, r.c_category, conf, r.status.value,
+                r.reasoning_log or "", subtitle, frame,
+                r.model_used or "", proc, created
+            ])
+
+            row_idx = ws.max_row
+            ws.row_dimensions[row_idx].height = 80
+            cat = r.c_category or ""
+            stat = r.status.value if r.status else ""
+
+            for cell in ws[row_idx]:
+                cell.font = Font(name="Arial", size=9)
+                cell.border = border
+                cell.alignment = Alignment(vertical="top", wrap_text=True)
+
+            # 분류 컬럼 색상
+            if cat in cat_colors:
+                ws.cell(row_idx, 2).fill = PatternFill("solid", start_color=cat_colors[cat], end_color=cat_colors[cat])
+                ws.cell(row_idx, 2).font = Font(name="Arial", size=9, bold=True)
+                ws.cell(row_idx, 2).alignment = Alignment(horizontal="center", vertical="top")
+
+            # 상태 컬럼 색상
+            if stat in stat_colors:
+                ws.cell(row_idx, 4).fill = PatternFill("solid", start_color=stat_colors[stat], end_color=stat_colors[stat])
+                ws.cell(row_idx, 4).alignment = Alignment(horizontal="center", vertical="top")
+
+        # 컬럼 너비
+        for col, width in zip("ABCDEFGHIJ", [18, 8, 8, 16, 50, 30, 50, 14, 12, 20]):
+            ws.column_dimensions[col].width = width
+
+        ws.freeze_panes = "A2"
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        return buf.getvalue()
+
+    except Exception as e:
+        logger.error(f"엑셀 export 실패: {e}")
+        return None
+
+
 def safe_db_counts() -> tuple:
     """DB 카운트를 안전하게 조회. 실패 시 Mock 반환."""
     try:
-        from database_manager import DatabaseManager
+        from database_manager import db_manager
         from database_models import Contents, AnalysisResults, UserFeedback, ValidationLabels, ReviewStatus
-        _dm = DatabaseManager(mock_mode=True)
-        session = _dm.get_session()
+        session = db_manager.get_session()
         try:
             total_c = session.query(Contents).count()
             total_a = session.query(AnalysisResults).count()
@@ -1233,10 +1617,9 @@ def safe_db_counts() -> tuple:
 def safe_db_recent_rows() -> list:
     """최근 분석 이력을 안전하게 조회. 실패 시 Mock 반환."""
     try:
-        from database_manager import DatabaseManager
+        from database_manager import db_manager
         from database_models import AnalysisResults, Contents
-        _dm = DatabaseManager(mock_mode=True)
-        session = _dm.get_session()
+        session = db_manager.get_session()
         try:
             rows = session.query(AnalysisResults).join(Contents).order_by(
                 AnalysisResults.created_at.desc()).limit(8).all()
@@ -1246,7 +1629,7 @@ def safe_db_recent_rows() -> list:
                 "Video ID": r.video_id,
                 "제목": ((r.content.title or "")[:40] + "…") if r.content and r.content.title else "—",
                 "카테고리": r.c_category,
-                "신뢰도": f"{r.confidence_score:.2f}",
+                "신뢰도": r.confidence_score,
                 "상태": r.status.value,
                 "분석 시각": r.created_at.strftime("%m/%d %H:%M"),
             } for r in rows]
@@ -1271,10 +1654,9 @@ def safe_db_recent_rows() -> list:
 def safe_db_category_dist() -> dict:
     """카테고리 분포를 안전하게 조회. 실패 시 Mock 반환."""
     try:
-        from database_manager import DatabaseManager
+        from database_manager import db_manager
         from database_models import AnalysisResults
-        _dm = DatabaseManager(mock_mode=True)
-        session = _dm.get_session()
+        session = db_manager.get_session()
         try:
             cat_counts = {"C1": 0, "C2": 0, "C3": 0, "C4": 0, "C5": 0}
             results = session.query(AnalysisResults).order_by(
@@ -1305,7 +1687,7 @@ def render_sidebar():
           <p style="font-family:'Syne',sans-serif;font-size:1.15rem;font-weight:700;
                     color:#333333;margin:0;letter-spacing:-0.5px">Check</p>
           <p style="font-size:0.72rem;color:#888888;margin-top:4px;letter-spacing:0.06em">
-            멀티모달 LMM 기반 부적합 콘텐츠 판별</p>
+            이 영상에 대해 어떻게 생각하시나요?</p>
         </div>
         """, unsafe_allow_html=True)
 
@@ -1319,8 +1701,6 @@ def render_sidebar():
             f"<span class='status-chip {chip_class}'>{chip_text}</span>",
             unsafe_allow_html=True
         )
-
-        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
         # ── 아코디언 1: 분류 체계 ──
         with st.expander("📋 분류 체계", expanded=False):
@@ -1411,7 +1791,23 @@ def render_sidebar():
                 </div>
                 """, unsafe_allow_html=True)
 
-        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        # ── 시스템 현황 ──
+        with st.expander("🖥️ 시스템 현황", expanded=False):
+            total_c, total_a, total_f, pending = safe_db_counts()
+            for val, lbl in [
+                (total_c, "분석된 콘텐츠"),
+                (total_a, "분석 결과"),
+                (total_f, "사용자 피드백"),
+                (pending, "검토 대기 (HITL)"),
+            ]:
+                st.markdown(
+                    f"<div style='display:flex;align-items:center;padding:7px 0;"
+                    f"border-bottom:1px solid #f0f0f0;font-size:0.84rem;'>"
+                    f"<span style='color:#555;flex:1'>{lbl}</span>"
+                    f"<b style='color:#cc0000'>{val:,}</b></div>",
+                    unsafe_allow_html=True
+                )
+
         st.markdown("---")
         st.markdown("<div class='section-header'>설정</div>", unsafe_allow_html=True)
         auto_refresh = st.checkbox("자동 새로고침 (30s)", value=False)
@@ -1423,6 +1819,21 @@ def render_sidebar():
         if st.button("새로고침", use_container_width=True):
             st.rerun()
 
+        st.markdown("---")
+        st.markdown("<div class='section-header'>데이터 내보내기</div>", unsafe_allow_html=True)
+
+        excel_data = _generate_excel_export()
+        if excel_data:
+            st.download_button(
+                label="📥 엑셀로 내보내기",
+                data=excel_data,
+                file_name=f"shorts_analysis_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+        else:
+            st.caption("분석 데이터가 없습니다.")
+
 
 def main():
     # ── 세션 초기화 ───────────────────────────
@@ -1430,16 +1841,26 @@ def main():
         st.session_state.show_report = False
     if "video_id" not in st.session_state:
         st.session_state.video_id = None
+    if "analyzed_url" not in st.session_state:
+        st.session_state.analyzed_url = "—"
+    if "analyzed_title" not in st.session_state:
+        st.session_state.analyzed_title = "—"
+    if "analyzed_views" not in st.session_state:
+        st.session_state.analyzed_views = None
+    if "analyzed_duration" not in st.session_state:
+        st.session_state.analyzed_duration = None
 
     # ── 사이드바 (main 안에서 호출) ───────────
     render_sidebar()
     _inject_favicon(_LOGO_B64)
 
+    # ── 헤더 위 여백: 시각적 세로 중앙 ──────────
+    st.markdown("<div style='height: 18vh'></div>", unsafe_allow_html=True)
+
     # ── 헤더 ──────────────────────────────────
     st.markdown("""
     <div class="main-header-wrap">
       <h1 class="main-title"><span class="title-red">Shorts</span> Check</h1>
-      <p class="main-subtitle">멀티모달 LMM 기반 부적합 콘텐츠 탐지 및 5단계 분류 시스템</p>
     </div>
     """, unsafe_allow_html=True)
 
