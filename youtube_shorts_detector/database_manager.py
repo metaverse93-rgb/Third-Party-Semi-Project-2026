@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # SQLite 파일 DB 경로 (MOCK_MODE=False 일 때 사용)
-SQLITE_DB_PATH = "youtube_shorts_detector.db"
+SQLITE_DB_PATH = "/Users/jungsoomin/Third-Party-semi-Project-2026/youtube_shorts_detector.db"
 
 class DatabaseManager:
     """데이터베이스 연결 관리자"""

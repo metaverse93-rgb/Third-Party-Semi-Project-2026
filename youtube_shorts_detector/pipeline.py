@@ -67,7 +67,10 @@ class YouTubeShortsAnalysisPipeline:
                     "layout_score": preprocessing_result.layout_score,
                     "keyframe_count": len(preprocessing_result.keyframes),
                     "analysis_time": analysis_result.processing_time,
-                    "total_time": total_processing_time
+                    "total_time": total_processing_time,
+                    "raw_response": analysis_result.raw_response,
+                    "spam_detected": analysis_result.raw_response == "spam_pattern_detected",
+                    "short_circuit_c4": analysis_result.c_category.value in ["C1", "C2", "C3"],
                 },
                 "logs": preprocessing_result.processing_log + [
                     f"LMM 분석 완료: {analysis_result.c_category.value}",
