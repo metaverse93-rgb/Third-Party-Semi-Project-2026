@@ -934,7 +934,21 @@ def submit_opinion_to_db(video_id: str, ai_category: str,
     feedback_text = f"[AI분류:{ai_category}→사용자제안:{user_category}] {reason}".strip()
     return submit_feedback(video_id, "opinion", feedback_text)
 
+# def check_api_health() -> bool:
+#     try:
+#         r = requests.get("http://localhost:8000/health", timeout=3)
+#         return r.status_code == 200
+#     except Exception:
+#         return False
 def check_api_health() -> bool:
+    # Streamlit Cloud: OpenAI API 키 존재 여부로 판단
+    api_key = (
+        st.secrets.get("OPENAI_API_KEY", None)
+        or os.getenv("OPENAI_API_KEY", "")
+    )
+    if api_key:
+        return True
+    # 로컬 환경: localhost FastAPI 서버 체크
     try:
         r = requests.get("http://localhost:8000/health", timeout=3)
         return r.status_code == 200
