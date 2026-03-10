@@ -2968,14 +2968,14 @@ def render_sidebar():
 
         st.markdown("---")
         st.markdown("<div class='section-header'>설정</div>", unsafe_allow_html=True)
-        auto_refresh = st.checkbox("자동 새로고침 (30s)", value=False)
-        if auto_refresh:
-            import time as _time
-            _time.sleep(30)
-            st.rerun()
-
-        #if st.button("새로고침", use_container_width=True):
+        #auto_refresh = st.checkbox("자동 새로고침 (30s)", value=False)
+        #if auto_refresh:
+        #    import time as _time
+        #    _time.sleep(30)
         #    st.rerun()
+
+        if st.button("새로고침", use_container_width=True):
+            st.rerun()
 
         st.markdown("---")
         st.markdown("<div class='section-header'>데이터 내보내기</div>", unsafe_allow_html=True)
