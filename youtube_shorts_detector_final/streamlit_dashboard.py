@@ -946,14 +946,7 @@ def check_api_health() -> bool:
         st.secrets.get("OPENAI_API_KEY", None)
         or os.getenv("OPENAI_API_KEY", "")
     )
-    if api_key:
-        return True
-    # 로컬 환경: localhost FastAPI 서버 체크
-    try:
-        r = requests.get("http://localhost:8000/health", timeout=3)
-        return r.status_code == 200
-    except Exception:
-        return False
+    return bool(api_key)
 
 
 # ─────────────────────────────────────────
