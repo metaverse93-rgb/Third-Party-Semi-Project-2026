@@ -2974,8 +2974,8 @@ def render_sidebar():
             _time.sleep(30)
             st.rerun()
 
-        if st.button("새로고침", use_container_width=True):
-            st.rerun()
+        #if st.button("새로고침", use_container_width=True):
+        #    st.rerun()
 
         st.markdown("---")
         st.markdown("<div class='section-header'>데이터 내보내기</div>", unsafe_allow_html=True)
