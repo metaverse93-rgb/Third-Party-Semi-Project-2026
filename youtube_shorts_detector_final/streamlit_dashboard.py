@@ -3276,12 +3276,9 @@ def render_sidebar():
 
         st.markdown("---")
         st.markdown("<div class='section-header'>설정</div>", unsafe_allow_html=True)
-        st.markdown("---")
-        st.markdown("<div class='section-header'>설정</div>", unsafe_allow_html=True)
         if st.button("🔄 새로고침", use_container_width=True):  # ← 추가됨
            st.rerun()
         st.markdown("---")
-        st.markdown("<div class='section-header'>데이터 내보내기</div>", unsafe_allow_html=True)
         st.markdown("<div class='section-header'>데이터 내보내기</div>", unsafe_allow_html=True)
 
         excel_data = _generate_excel_export()
