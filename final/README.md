@@ -163,6 +163,25 @@ python admin_api.py
 # 터미널 3: Streamlit 대시보드 (메인)
 streamlit run streamlit_dashboard.py
 
+🚀 3.1 스트림 접속 오류 발생 시
+1. 웹 인터페이스 실행
+streamlit run app.py
+2. API 서버 실행
+uvicorn main:app --reload --port 8000
+3. Chrome 확장 프로그램 설치
+Chrome 확장 프로그램 관리 페이지 접속
+개발자 모드 활성화
+chrome_extension/ 폴더 로드
+4. 로컬에서 실행 시
+mkdir -p /Users/jungsoomin/Third-Party-semi-Project-2026/youtube_shorts_detector_final/.streamlit
+터미널에 입력(숨김폴더 생성)
+touch /Users/jungsoomin/Third-Party-semi-Project-2026/youtube_shorts_detector_final/.streamlit/secrets.toml
+터미널에 입력 (toml파일만들기)
+cd youtube_shorts_detector_final
+해서 위치 고정
+OPENAI_API_KEY=sk-나키 streamlit run streamlit_dashboard.py
+터미널에 입력 해서 api연결
+
 🌐 4. 접속 확인
 🎨 메인 대시보드: http://localhost:8501
 📊 사용자 API: http://localhost:8000/docs
