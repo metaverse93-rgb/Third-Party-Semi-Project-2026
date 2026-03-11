@@ -163,12 +163,7 @@ python admin_api.py
 # 터미널 3: Streamlit 대시보드 (메인)
 streamlit run streamlit_dashboard.py
 
-🌐 4. 접속 확인
-🎨 메인 대시보드: http://localhost:8501
-📊 사용자 API: http://localhost:8000/docs
-🛠️ 관리자 API: http://localhost:8001/docs
-
-🚀 4.1 접속 오류 발생 시, 접속방법
+🚀 3.1 오류 발생 시
 1. 웹 인터페이스 실행
 streamlit run app.py
 2. API 서버 실행
@@ -186,6 +181,12 @@ cd youtube_shorts_detector_final
 해서 위치 고정
 OPENAI_API_KEY=sk-나키 streamlit run streamlit_dashboard.py
 터미널에 입력 해서 api연결
+
+
+🌐 4. 접속 확인
+🎨 메인 대시보드: http://localhost:8501
+📊 사용자 API: http://localhost:8000/docs
+🛠️ 관리자 API: http://localhost:8001/docs
 
 💡 사용법
 🎬 영상 분석하기
